@@ -35,7 +35,7 @@ Non-WSL Linux paths and non-NVIDIA acceleration routes were intentionally remove
 ## �📋 Prerequisites
 
 - **Operating System**: Windows with WSL2 Ubuntu
-- **Docker**: [Docker Engine and Docker Compose v2](https://fixtse.com/blog/open-webui#docker-installation-linuxwsl)
+- **Docker**: [Docker Desktop for Windows](https://docs.docker.com/desktop/setup/install/windows-install/)
 - **Network Access**: Internet connection for downloading files
 - **Permissions**: Ability to create directories and modify files
 
@@ -52,7 +52,17 @@ Non-WSL Linux paths and non-NVIDIA acceleration routes were intentionally remove
 
 ## 🔧 Installation
 
-### Install WSL2 Ubuntu
+### Full Setup From Scratch
+
+This is the recommended first-time setup flow for a new machine:
+
+1. Install WSL2 and Ubuntu in Windows.
+2. Install Docker Desktop on Windows and turn on WSL integration for Ubuntu.
+3. Update WSL and confirm GPU access from Ubuntu.
+4. Install a few Ubuntu utilities and clone this repository.
+5. Run the installer script from inside Ubuntu.
+
+### 1. Install WSL2 Ubuntu
 
 If WSL2 Ubuntu is not installed yet, open **PowerShell as Administrator** in Windows and run:
 
@@ -75,13 +85,117 @@ wsl --list --verbose
 
 Reference: [Install WSL | Microsoft Learn](https://learn.microsoft.com/en-us/windows/wsl/install)
 
-### Quick Start
+### 2. Update WSL
+
+Still in **PowerShell**, update WSL to the latest version and kernel:
+
+```powershell
+wsl --update
+```
+
+You can check the installed WSL version with:
+
+```powershell
+wsl --version
+```
+
+### 3. Install Docker Desktop on Windows
+
+Install Docker Desktop on Windows, not Docker Engine directly inside Ubuntu.
+
+1. Download and install Docker Desktop for Windows.
+2. During setup, keep the `Use WSL 2 instead of Hyper-V` option enabled.
+3. Start Docker Desktop once the install finishes.
+4. Accept the Docker terms if prompted.
+
+Reference: [Install Docker Desktop on Windows | Docker Docs](https://docs.docker.com/desktop/setup/install/windows-install/)
+
+### 4. Enable Docker for Ubuntu in WSL
+
+In Docker Desktop on Windows:
+
+1. Open `Settings`.
+2. In `General`, make sure `Use WSL 2 based engine` is enabled.
+3. Go to `Settings > Resources > WSL Integration`.
+4. Enable integration for your `Ubuntu` distribution.
+5. Click `Apply`.
+
+Docker recommends using Docker Desktop's WSL integration instead of installing Docker Engine separately inside the WSL distro.
+
+Reference: [Docker Desktop WSL 2 backend on Windows | Docker Docs](https://docs.docker.com/desktop/features/wsl/)
+
+### 5. Make Sure NVIDIA GPU Support Works
+
+For the accelerated path this installer targets, Windows must expose the NVIDIA GPU into WSL2.
+
+Before continuing:
+
+1. Install or update the current Windows NVIDIA driver with WSL2 GPU support.
+2. Keep Docker Desktop configured to use the WSL2 backend.
+3. Make sure `wsl --update` has been run recently.
+
+Reference: [GPU support in Docker Desktop for Windows | Docker Docs](https://docs.docker.com/desktop/features/gpu/)
+
+### 6. Open Ubuntu and Install Basic Tools
+
+From this point on, run commands inside **Ubuntu**, not in PowerShell.
+
+Update packages and install the basic tools used by this README and installer:
 
 ```bash
-# Download the script
-wget -O immich_installer.sh https://raw.githubusercontent.com/fixtse/immich-simple-installer/main/immich_installer.sh
-# or
-curl -fsSL -o immich_installer.sh https://raw.githubusercontent.com/fixtse/immich-simple-installer/main/immich_installer.sh
+sudo apt update
+sudo apt install -y git curl wget
+```
+
+### 7. Verify Docker and GPU Access Inside Ubuntu
+
+Inside Ubuntu, check:
+
+```bash
+docker --version
+docker compose version
+docker info
+nvidia-smi
+grep -m1 '^vendor_id' /proc/cpuinfo
+```
+
+Expected results:
+
+- `docker info` should work without daemon errors.
+- `nvidia-smi` should show your NVIDIA GPU from inside Ubuntu.
+- `vendor_id` should report `GenuineIntel`.
+
+Optional Docker-level GPU validation from Docker's docs:
+
+```bash
+docker run --rm -it --gpus=all nvcr.io/nvidia/k8s/cuda-sample:nbody nbody -gpu -benchmark
+```
+
+### 8. Clone This Repository
+
+Inside Ubuntu:
+
+```bash
+git clone https://github.com/Polkiujhy/immich-simple-installer.git
+cd immich-simple-installer
+```
+
+### 9. Run the Installer
+
+Inside Ubuntu:
+
+```bash
+chmod +x immich_installer.sh
+./immich_installer.sh
+```
+
+### Quick Start
+
+If WSL2 Ubuntu, Docker Desktop WSL integration, and NVIDIA access are already working, you can just run:
+
+```bash
+git clone https://github.com/Polkiujhy/immich-simple-installer.git
+cd immich-simple-installer
 
 # Make it executable
 chmod +x immich_installer.sh
@@ -232,14 +346,16 @@ docker --version
 docker compose version
 docker info
 
-# If Docker is unavailable in WSL, start Docker Desktop on Windows first
+# If Docker is unavailable in WSL:
+# 1. Start Docker Desktop on Windows
+# 2. Confirm WSL integration is enabled for Ubuntu
 ```
 
 #### Hardware Not Detected
 ```bash
 # Check NVIDIA
 nvidia-smi
-docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi
+docker run --rm -it --gpus=all nvcr.io/nvidia/k8s/cuda-sample:nbody nbody -gpu -benchmark
 
 # Confirm the CPU vendor reported inside WSL
 grep -m1 '^vendor_id' /proc/cpuinfo
