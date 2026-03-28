@@ -29,11 +29,216 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# Function to check if a command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Function to expand ~ in user-provided paths
+expand_user_path() {
+    local path="$1"
+
+    case "$path" in
+        "~")
+            printf '%s\n' "$HOME"
+        ;;
+        "~/"*)
+            printf '%s/%s\n' "$HOME" "${path#~/}"
+        ;;
+        *)
+            printf '%s\n' "$path"
+        ;;
+    esac
+}
+
+# Function to resolve a path even if some segments do not exist yet
+resolve_path() {
+    local path
+    path=$(expand_user_path "$1")
+
+    if command_exists realpath; then
+        realpath -m "$path"
+    elif command_exists readlink; then
+        readlink -m "$path"
+    else
+        case "$path" in
+            /*)
+                printf '%s\n' "$path"
+            ;;
+            *)
+                printf '%s/%s\n' "$(pwd -P)" "$path"
+            ;;
+        esac
+    fi
+}
+
+# Function to find the nearest existing path for filesystem checks
+nearest_existing_path() {
+    local path
+    path=$(resolve_path "$1")
+
+    while [ ! -e "$path" ] && [ "$path" != "/" ]; do
+        path=$(dirname "$path")
+    done
+
+    printf '%s\n' "$path"
+}
+
+# Function to get the filesystem type for a path
+get_filesystem_type() {
+    local existing_path
+    existing_path=$(nearest_existing_path "$1")
+    df -T "$existing_path" 2>/dev/null | awk 'NR==2 {print $2}'
+}
+
+# Function to detect WSL-incompatible database paths
+is_wsl_unsafe_database_path() {
+    local resolved_path
+    local filesystem_type
+
+    resolved_path=$(resolve_path "$1")
+    filesystem_type=$(get_filesystem_type "$resolved_path")
+
+    case "$filesystem_type" in
+        drvfs|9p|fuseblk|ntfs|vfat|msdos|exfat)
+            return 0
+        ;;
+    esac
+
+    [[ "$resolved_path" == /mnt/* ]]
+}
+
+# Function to warn about optional GPU detection tooling
+warn_if_missing_gpu_detection_tools() {
+    if ! command_exists lspci; then
+        print_warning "pciutils is not installed; Intel/AMD GPU auto-detection may be incomplete."
+        print_info "Install it with: sudo apt install -y pciutils"
+    fi
+}
+
+# Function to download files with wget or curl
+download_file() {
+    local output_file="$1"
+    local url="$2"
+
+    if command_exists wget; then
+        wget -O "$output_file" "$url"
+    elif command_exists curl; then
+        curl -fsSL -o "$output_file" "$url"
+    else
+        print_error "Neither wget nor curl is installed."
+        print_info "Install one with: sudo apt install -y wget"
+        return 1
+    fi
+}
+
+# Function to normalize transcoding API names to current Immich service names
+normalize_transcoding_api() {
+    case "$1" in
+        qsv)
+            printf '%s\n' "quicksync"
+        ;;
+        *)
+            printf '%s\n' "$1"
+        ;;
+    esac
+}
+
+# Function to normalize ML backend names for WSL-specific services
+normalize_ml_backend() {
+    local backend="$1"
+
+    if is_wsl && [ "$backend" = "openvino" ]; then
+        printf '%s\n' "openvino-wsl"
+    elif ! is_wsl && [ "$backend" = "openvino-wsl" ]; then
+        printf '%s\n' "openvino"
+    else
+        printf '%s\n' "$backend"
+    fi
+}
+
+# Function to configure the database as a Docker volume
+configure_database_volume() {
+    sed -i "s|DB_DATA_LOCATION=./postgres|DB_DATA_LOCATION=pgdata|" .env
+
+    if add_docker_volume "pgdata"; then
+        print_success "Docker volume configuration applied."
+        return 0
+    fi
+
+    print_error "Failed to configure Docker volume"
+    return 1
+}
+
+# Function to configure database storage safely for WSL
+configure_database_location() {
+    local default_db_location="./postgres"
+    local db_location=""
+    local resolved_db_location=""
+    local filesystem_type=""
+    local use_volume=""
+
+    echo
+
+    if is_wsl; then
+        print_warning "WSL detected!"
+        print_warning "The Postgres database must be on a filesystem that supports user/group ownership."
+        print_warning "Windows-backed filesystems such as NTFS/FAT32 under /mnt will NOT work."
+        echo
+        read -p "Do you want to use a Docker volume instead of a bind mount? (recommended for WSL) (Y/n): " use_volume
+        if [[ ! "$use_volume" =~ ^[Nn]$ ]]; then
+            configure_database_volume
+            return $?
+        fi
+
+        while true; do
+            echo "Current DB_DATA_LOCATION: $default_db_location"
+            read -p "Enter database data location (press Enter to keep default '$default_db_location'): " db_location
+            if [ -z "$db_location" ]; then
+                db_location="$default_db_location"
+            else
+                db_location=$(expand_user_path "$db_location")
+            fi
+
+            if is_wsl_unsafe_database_path "$db_location"; then
+                resolved_db_location=$(resolve_path "$db_location")
+                filesystem_type=$(get_filesystem_type "$resolved_db_location")
+                print_error "Database location '$resolved_db_location' is on '${filesystem_type:-unknown}', which is not supported for Postgres under WSL."
+                print_info "Use a Docker volume or a Linux filesystem path under your WSL home directory."
+                read -p "Switch to a Docker volume instead? (Y/n): " use_volume
+                if [[ ! "$use_volume" =~ ^[Nn]$ ]]; then
+                    configure_database_volume
+                    return $?
+                fi
+                continue
+            fi
+
+            if [ "$db_location" != "$default_db_location" ]; then
+                sed -i "s|DB_DATA_LOCATION=./postgres|DB_DATA_LOCATION=$db_location|" .env
+                print_info "Database location set to: $db_location"
+            else
+                print_info "Using default database location: ./postgres"
+            fi
+            return 0
+        done
+    fi
+
+    echo "Current DB_DATA_LOCATION: ./postgres"
+    read -p "Enter database data location (press Enter to keep default './postgres'): " db_location
+    if [ -n "$db_location" ]; then
+        db_location=$(expand_user_path "$db_location")
+        sed -i "s|DB_DATA_LOCATION=./postgres|DB_DATA_LOCATION=$db_location|" .env
+        print_info "Database location set to: $db_location"
+    else
+        print_info "Using default database location: ./postgres"
+    fi
+}
+
 # Function to generate a random password
 generate_password() {
-    if command -v pwgen >/dev/null 2>&1; then
+    if command_exists pwgen; then
         pwgen -s 32 1
-        elif command -v openssl >/dev/null 2>&1; then
+        elif command_exists openssl; then
         openssl rand -base64 32 | tr -d "=+/" | cut -c1-32
     else
         # Fallback method
@@ -92,7 +297,7 @@ check_nvidia() {
     local has_nvidia_toolkit=false
     
     # Check for NVIDIA GPU
-    if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+    if command_exists nvidia-smi && nvidia-smi >/dev/null 2>&1; then
         has_nvidia_gpu=true
     fi
     
@@ -118,7 +323,7 @@ check_nvidia() {
 check_intel_qsv() {
     if [ -d "/dev/dri" ] && ls /dev/dri/render* >/dev/null 2>&1; then
         # Check if it's Intel GPU
-        if lspci | grep -i "vga.*intel" >/dev/null 2>&1; then
+        if command_exists lspci && lspci | grep -i "vga.*intel" >/dev/null 2>&1; then
             echo "true"
             return
         fi
@@ -162,7 +367,7 @@ detect_hardware_apis() {
     
     # Check Intel QSV
     if [ "$(check_intel_qsv)" = "true" ] && ! is_wsl; then
-        apis+=("qsv")
+        apis+=("quicksync")
     fi
     
     # Check VAAPI
@@ -288,6 +493,7 @@ configure_hardware_transcoding() {
     fi
     
     print_info "Detecting available hardware acceleration APIs..."
+    warn_if_missing_gpu_detection_tools
     
     local available_apis=($(detect_hardware_apis))
     
@@ -347,12 +553,12 @@ configure_hardware_transcoding() {
 configure_manual_hwaccel() {
     echo
     print_info "Manual hardware acceleration configuration:"
-    print_info "Available APIs: nvenc, qsv, vaapi, vaapi-wsl, rkmpp"
+    print_info "Available APIs: nvenc, quicksync, vaapi, vaapi-wsl, rkmpp"
     read -p "Enter the API you want to use (or 'disable' to remove, or press Enter to skip): " manual_api
     
     if [ -n "$manual_api" ]; then
         case "$manual_api" in
-            nvenc|qsv|vaapi|vaapi-wsl|rkmpp)
+            nvenc|qsv|quicksync|vaapi|vaapi-wsl|rkmpp)
                 setup_hardware_transcoding "$manual_api"
             ;;
             disable)
@@ -360,7 +566,7 @@ configure_manual_hwaccel() {
             ;;
             *)
                 print_error "Invalid API: $manual_api"
-                print_info "Valid options: nvenc, qsv, vaapi, vaapi-wsl, rkmpp, disable"
+                print_info "Valid options: nvenc, quicksync, vaapi, vaapi-wsl, rkmpp, disable"
             ;;
         esac
     else
@@ -370,13 +576,14 @@ configure_manual_hwaccel() {
 
 # Function to setup hardware transcoding
 setup_hardware_transcoding() {
-    local api="$1"
+    local api
+    api=$(normalize_transcoding_api "$1")
     
     print_info "Setting up hardware transcoding with $api..."
     
     # Download hwaccel.transcoding.yml
     print_info "Downloading hwaccel.transcoding.yml..."
-    if wget -O hwaccel.transcoding.yml https://github.com/immich-app/immich/releases/latest/download/hwaccel.transcoding.yml; then
+    if download_file "hwaccel.transcoding.yml" "https://github.com/immich-app/immich/releases/latest/download/hwaccel.transcoding.yml"; then
         print_success "hwaccel.transcoding.yml downloaded successfully."
     else
         print_error "Failed to download hwaccel.transcoding.yml"
@@ -456,7 +663,7 @@ check_nvidia_cuda_ml() {
     local cuda_compute_capability=""
     
     # Check for NVIDIA GPU
-    if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+    if command_exists nvidia-smi && nvidia-smi >/dev/null 2>&1; then
         has_nvidia_gpu=true
         # Get compute capability (simplified check)
         local gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader,nounits | head -1)
@@ -484,7 +691,7 @@ check_nvidia_cuda_ml() {
 
 # Function to check for AMD ROCm support
 check_amd_rocm() {
-    if lspci | grep -i "amd.*radeon\|amd.*rx\|amd.*vega" >/dev/null 2>&1; then
+    if command_exists lspci && lspci | grep -i "amd.*radeon\|amd.*rx\|amd.*vega" >/dev/null 2>&1; then
         echo "true"
     else
         echo "false"
@@ -493,7 +700,7 @@ check_amd_rocm() {
 
 # Function to check for Intel OpenVINO support
 check_intel_openvino() {
-    if lspci | grep -i "vga.*intel\|display.*intel" >/dev/null 2>&1; then
+    if command_exists lspci && lspci | grep -i "vga.*intel\|display.*intel" >/dev/null 2>&1; then
         # Check for Iris Xe or Arc GPUs specifically
         if lspci | grep -i "intel.*iris\|intel.*arc\|intel.*xe" >/dev/null 2>&1; then
             echo "discrete"
@@ -512,7 +719,7 @@ check_arm_nn() {
     local has_libmali=false
     
     # Check for Mali GPU
-    if lscpu | grep -i "arm\|aarch64" >/dev/null 2>&1 && lspci | grep -i "mali" >/dev/null 2>&1; then
+    if lscpu | grep -i "arm\|aarch64" >/dev/null 2>&1 && command_exists lspci && lspci | grep -i "mali" >/dev/null 2>&1; then
         has_mali=true
     fi
     
@@ -577,7 +784,11 @@ detect_ml_backends() {
     # Check Intel OpenVINO
     local intel_result=$(check_intel_openvino)
     if [ "$intel_result" != "false" ]; then
-        backends+=("openvino")
+        if is_wsl; then
+            backends+=("openvino-wsl")
+        else
+            backends+=("openvino")
+        fi
     fi
     
     # Check ARM NN
@@ -630,6 +841,7 @@ configure_ml_hardware_acceleration() {
     fi
     
     print_info "Detecting available ML acceleration backends..."
+    warn_if_missing_gpu_detection_tools
     
     local available_backends=($(detect_ml_backends))
     
@@ -689,12 +901,12 @@ configure_ml_hardware_acceleration() {
 configure_manual_ml_hwaccel() {
     echo
     print_info "Manual ML hardware acceleration configuration:"
-    print_info "Available backends: cuda, rocm, openvino, armnn, rknn"
+    print_info "Available backends: cuda, rocm, openvino, openvino-wsl, armnn, rknn"
     read -p "Enter the backend you want to use (or 'disable' to remove, or press Enter to skip): " manual_backend
     
     if [ -n "$manual_backend" ]; then
         case "$manual_backend" in
-            cuda|rocm|openvino|armnn|rknn)
+            cuda|rocm|openvino|openvino-wsl|armnn|rknn)
                 setup_ml_hardware_acceleration "$manual_backend"
             ;;
             disable)
@@ -702,7 +914,7 @@ configure_manual_ml_hwaccel() {
             ;;
             *)
                 print_error "Invalid backend: $manual_backend"
-                print_info "Valid options: cuda, rocm, openvino, armnn, rknn, disable"
+                print_info "Valid options: cuda, rocm, openvino, openvino-wsl, armnn, rknn, disable"
             ;;
         esac
     else
@@ -712,13 +924,20 @@ configure_manual_ml_hwaccel() {
 
 # Function to setup ML hardware acceleration
 setup_ml_hardware_acceleration() {
-    local backend="$1"
+    local backend
+    local image_backend
+
+    backend=$(normalize_ml_backend "$1")
+    image_backend="$backend"
+    if [ "$backend" = "openvino-wsl" ]; then
+        image_backend="openvino"
+    fi
     
     print_info "Setting up ML hardware acceleration with $backend..."
     
     # Download hwaccel.ml.yml
     print_info "Downloading hwaccel.ml.yml..."
-    if wget -O hwaccel.ml.yml https://github.com/immich-app/immich/releases/latest/download/hwaccel.ml.yml; then
+    if download_file "hwaccel.ml.yml" "https://github.com/immich-app/immich/releases/latest/download/hwaccel.ml.yml"; then
         print_success "hwaccel.ml.yml downloaded successfully."
     else
         print_error "Failed to download hwaccel.ml.yml"
@@ -765,13 +984,13 @@ setup_ml_hardware_acceleration() {
     fi
     
     # Modify the image tag to include the backend
-    print_info "Updating ML service image tag for $backend backend..."
-    if grep -q "immich-machine-learning.*release.*-$backend" docker-compose.yml; then
-        print_info "Image tag already includes $backend backend."
+    print_info "Updating ML service image tag for $image_backend backend..."
+    if grep -q "immich-machine-learning.*release.*-$image_backend" docker-compose.yml; then
+        print_info "Image tag already includes $image_backend backend."
     else
         # Update the image tag
-        sed -i "s|immich-machine-learning:\${IMMICH_VERSION:-release}|immich-machine-learning:\${IMMICH_VERSION:-release}-$backend|" docker-compose.yml
-        print_success "Updated ML service image to include $backend backend."
+        sed -i "s|immich-machine-learning:\${IMMICH_VERSION:-release}|immich-machine-learning:\${IMMICH_VERSION:-release}-$image_backend|" docker-compose.yml
+        print_success "Updated ML service image to include $image_backend backend."
     fi
     
     # Backend-specific configuration and advice
@@ -788,8 +1007,11 @@ setup_ml_hardware_acceleration() {
             print_info "HSA_OVERRIDE_GFX_VERSION=<supported_version> (e.g., 10.3.0)"
             print_info "If that doesn't work, also try: HSA_USE_SVM=0"
         ;;
-        "openvino")
+        "openvino"|"openvino-wsl")
             print_info "OpenVINO backend selected for Intel GPUs."
+            if [ "$backend" = "openvino-wsl" ]; then
+                print_info "Using the WSL-specific OpenVINO service definition."
+            fi
             print_warning "Expect higher RAM usage compared to CPU processing."
             print_info "Discrete GPUs generally work better than integrated ones."
             print_info "For multi-GPU: Set MACHINE_LEARNING_DEVICE_IDS=0,1"
@@ -894,7 +1116,7 @@ main() {
     fi
     
     # Convert to absolute path
-    INSTALL_FOLDER=$(realpath "$INSTALL_FOLDER")
+    INSTALL_FOLDER=$(resolve_path "$INSTALL_FOLDER")
     
     print_info "Installation folder: $INSTALL_FOLDER"
     
@@ -920,7 +1142,7 @@ main() {
     
     # Download docker-compose.yml
     print_info "Downloading docker-compose.yml..."
-    if wget -O docker-compose.yml https://github.com/immich-app/immich/releases/latest/download/docker-compose.yml; then
+    if download_file "docker-compose.yml" "https://github.com/immich-app/immich/releases/latest/download/docker-compose.yml"; then
         print_success "docker-compose.yml downloaded successfully."
     else
         print_error "Failed to download docker-compose.yml"
@@ -929,7 +1151,7 @@ main() {
     
     # Download .env file
     print_info "Downloading .env file..."
-    if wget -O .env https://github.com/immich-app/immich/releases/latest/download/example.env; then
+    if download_file ".env" "https://github.com/immich-app/immich/releases/latest/download/example.env"; then
         print_success ".env file downloaded successfully."
     else
         print_error "Failed to download .env file"
@@ -944,50 +1166,15 @@ main() {
     echo "Current UPLOAD_LOCATION: ./library"
     read -p "Enter upload location (press Enter to keep default './library'): " upload_location
     if [ -n "$upload_location" ]; then
+        upload_location=$(expand_user_path "$upload_location")
         sed -i "s|UPLOAD_LOCATION=./library|UPLOAD_LOCATION=$upload_location|" .env
         print_info "Upload location set to: $upload_location"
     else
         print_info "Using default upload location: ./library"
     fi
     
-    # Configure DB_DATA_LOCATION (WSL check)
-    echo
-    if is_wsl; then
-        print_warning "WSL detected!"
-        print_warning "The Postgres database must be on a filesystem that supports user/group ownership."
-        print_warning "NTFS/FAT32 filesystems (commonly under /mnt) will NOT work."
-        echo
-        read -p "Do you want to use a Docker volume instead of a bind mount? (recommended for WSL) (Y/n): " use_volume
-        if [[ ! "$use_volume" =~ ^[Nn]$ ]]; then
-            # Use Docker volume
-            sed -i "s|DB_DATA_LOCATION=./postgres|DB_DATA_LOCATION=pgdata|" .env
-            
-            # Add pgdata volume to docker-compose.yml
-            if add_docker_volume "pgdata"; then
-                print_success "Docker volume configuration applied."
-            else
-                print_error "Failed to configure Docker volume"
-            fi
-        else
-            echo "Current DB_DATA_LOCATION: ./postgres"
-            read -p "Enter database data location (press Enter to keep default './postgres'): " db_location
-            if [ -n "$db_location" ]; then
-                sed -i "s|DB_DATA_LOCATION=./postgres|DB_DATA_LOCATION=$db_location|" .env
-                print_info "Database location set to: $db_location"
-            else
-                print_info "Using default database location: ./postgres"
-            fi
-        fi
-    else
-        echo "Current DB_DATA_LOCATION: ./postgres"
-        read -p "Enter database data location (press Enter to keep default './postgres'): " db_location
-        if [ -n "$db_location" ]; then
-            sed -i "s|DB_DATA_LOCATION=./postgres|DB_DATA_LOCATION=$db_location|" .env
-            print_info "Database location set to: $db_location"
-        else
-            print_info "Using default database location: ./postgres"
-        fi
-    fi
+    # Configure DB_DATA_LOCATION
+    configure_database_location
     
     # Configure timezone
     echo

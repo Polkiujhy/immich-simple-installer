@@ -11,7 +11,7 @@ A really simple bash script for easy installation and configuration of [Immich](
 - **WSL Support**: Special handling for Windows Subsystem for Linux environments
 
 ### Hardware Acceleration
-- **Video Transcoding**: Automatic detection and setup for NVENC, QSV, VAAPI, and RKMPP
+- **Video Transcoding**: Automatic detection and setup for NVENC, Quick Sync, VAAPI, and RKMPP
 - **Machine Learning**: Support for CUDA, ROCm, OpenVINO, ARM NN, and RKNN backends
 - **Smart Detection**: Identifies available hardware and suggests optimal configurations
 - **Disable Options**: Easy removal of existing hardware acceleration configurations
@@ -45,7 +45,7 @@ While officially tested on Ubuntu and WSL(Ubuntu), the script may work on other 
 - NVIDIA Container Toolkit (Linux only, not needed for WSL2)
 - For ML: GPU with compute capability 5.2+ and driver ≥545
 
-#### Intel (QSV/OpenVINO)
+#### Intel (Quick Sync/OpenVINO)
 - Intel GPU with `/dev/dri` devices available
 - For VP9: 9th gen CPU or newer
 - Kernel support for hardware acceleration
@@ -65,6 +65,8 @@ While officially tested on Ubuntu and WSL(Ubuntu), the script may work on other 
 ```bash
 # Download the script
 wget -O immich_installer.sh https://raw.githubusercontent.com/fixtse/immich-simple-installer/main/immich_installer.sh
+# or
+curl -fsSL -o immich_installer.sh https://raw.githubusercontent.com/fixtse/immich-simple-installer/main/immich_installer.sh
 
 # Make it executable
 chmod +x immich_installer.sh
@@ -104,7 +106,7 @@ The script will guide you through:
    - Database password (auto-generated or custom)
 
 5. **Hardware Transcoding Setup**:
-   - Automatic API detection (NVENC, QSV, VAAPI, RKMPP)
+   - Automatic API detection (NVENC, Quick Sync, VAAPI, RKMPP)
    - Interactive selection from available options
    - Manual configuration option
    - Disable existing configurations
@@ -130,8 +132,8 @@ The script will guide you through:
 
 #### Manual Configuration
 When auto-detection fails, you can manually specify:
-- **Transcoding**: `nvenc`, `qsv`, `vaapi`, `vaapi-wsl`, `rkmpp`
-- **ML**: `cuda`, `rocm`, `openvino`, `armnn`, `rknn`
+- **Transcoding**: `nvenc`, `quicksync`, `vaapi`, `vaapi-wsl`, `rkmpp`
+- **ML**: `cuda`, `rocm`, `openvino`, `openvino-wsl`, `armnn`, `rknn`
 
 ## 📁 Generated Files
 
@@ -155,7 +157,7 @@ your-installation-folder/
 | API | Detection Method | Requirements |
 |-----|------------------|--------------|
 | **NVENC** | `nvidia-smi` + Container Toolkit | NVIDIA GPU + drivers |
-| **QSV** | Intel GPU + `/dev/dri` | Intel CPU with iGPU |
+| **Quick Sync** | Intel GPU + `/dev/dri` | Intel CPU with iGPU |
 | **VAAPI** | `/dev/dri` render nodes | AMD/Intel/NVIDIA GPU |
 | **RKMPP** | Rockchip SoC detection | RK35xx/RK33xx ARM SoC |
 
@@ -216,9 +218,10 @@ HSA_OVERRIDE_GFX_VERSION=10.3.0
 For Windows WSL users:
 
 - **Database Volume**: Script automatically suggests Docker volumes over bind mounts
-- **Filesystem Compatibility**: NTFS/FAT32 filesystems under `/mnt` won't work for database
+- **Filesystem Compatibility**: Unsafe database bind mounts on `/mnt` and other Windows-backed filesystems are rejected
 - **NVIDIA Support**: Container Toolkit not required in WSL2
 - **VAAPI**: Uses `vaapi-wsl` variant instead of standard `vaapi`
+- **OpenVINO**: Uses `openvino-wsl` for Intel ML acceleration on WSL2
 
 ## 🐛 Troubleshooting
 
@@ -263,7 +266,7 @@ sudo usermod -aG docker $USER
 - Check compute capability: GPU must be 5.2+
 - Install Container Toolkit: [NVIDIA Docs](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
 
-#### Intel QSV
+#### Intel Quick Sync
 - Verify `/dev/dri` devices exist
 - For older CPUs: May need low-power encoding mode
 - Kernel 5.15 issues: Upgrade kernel for 11th gen CPUs
@@ -318,4 +321,3 @@ Feel free to submit issues, suggestions, or improvements to enhance the installe
 ---
 
 **Note**: This is an unofficial installer script. For official installation methods, please refer to the [Immich documentation](https://immich.app/docs/install/).
-
