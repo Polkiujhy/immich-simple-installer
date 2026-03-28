@@ -1,6 +1,6 @@
 # Immich Simple Installer
 
-A really simple bash script for easy installation and configuration of [Immich](https://immich.app) with Docker Compose, including automatic hardware acceleration detection and setup
+A WSL2-focused bash script for easy installation and configuration of [Immich](https://immich.app) on Intel CPU + NVIDIA GPU systems, including automatic hardware acceleration detection and setup
 
 ## 🚀 Features
 
@@ -8,11 +8,11 @@ A really simple bash script for easy installation and configuration of [Immich](
 - **Automated Download**: Downloads latest `docker-compose.yml` and `.env` files from Immich releases
 - **Interactive Configuration**: Guided setup for all environment variables
 - **Docker Validation**: Checks Docker and Docker Compose installation and status
-- **WSL Support**: Special handling for Windows Subsystem for Linux environments
+- **WSL Focus**: Purpose-built for Windows Subsystem for Linux 2 on Ubuntu
 
 ### Hardware Acceleration
-- **Video Transcoding**: Automatic detection and setup for NVENC, Quick Sync, VAAPI, and RKMPP
-- **Machine Learning**: Support for CUDA, ROCm, OpenVINO, ARM NN, and RKNN backends
+- **Video Transcoding**: Automatic detection and setup for `nvenc`
+- **Machine Learning**: Support for `cuda`
 - **Smart Detection**: Identifies available hardware and suggests optimal configurations
 - **Disable Options**: Easy removal of existing hardware acceleration configurations
 
@@ -24,16 +24,17 @@ A really simple bash script for easy installation and configuration of [Immich](
 
 ## �️ Supported Platforms
 
-This script has been officially tested and supports:
-- **Ubuntu 20.04 LTS**
-- **Ubuntu 24.04 LTS** 
+This script targets:
 - **Windows Subsystem for Linux (WSL2)**
+- **Ubuntu on WSL2**
+- **Intel CPU hosts**
+- **NVIDIA GPU acceleration**
 
-While officially tested on Ubuntu and WSL(Ubuntu), the script may work on other Linux distributions as well, since it primarily relies on Docker and standard Linux utilities.
+Non-WSL Linux paths and non-NVIDIA acceleration routes were intentionally removed to keep the installer aligned with the target hardware.
 
 ## �📋 Prerequisites
 
-- **Operating System**: Linux or Windows with WSL2
+- **Operating System**: Windows with WSL2 Ubuntu
 - **Docker**: [Docker Engine and Docker Compose v2](https://fixtse.com/blog/open-webui#docker-installation-linuxwsl)
 - **Network Access**: Internet connection for downloading files
 - **Permissions**: Ability to create directories and modify files
@@ -42,21 +43,12 @@ While officially tested on Ubuntu and WSL(Ubuntu), the script may work on other 
 
 #### NVIDIA (NVENC/CUDA)
 - NVIDIA GPU with driver installed
-- NVIDIA Container Toolkit (Linux only, not needed for WSL2)
+- NVIDIA support exposed into WSL2
 - For ML: GPU with compute capability 5.2+ and driver ≥545
 
-#### Intel (Quick Sync/OpenVINO)
-- Intel GPU with `/dev/dri` devices available
-- For VP9: 9th gen CPU or newer
-- Kernel support for hardware acceleration
-
-#### AMD (VAAPI/ROCm)
-- AMD GPU with appropriate drivers
-- For ROCm: 35GB+ free disk space for ML images
-
-#### ARM/Rockchip
-- **ARM NN**: Mali GPU with `/dev/mali0` and `libmali.so`
-- **RKNN**: Supported Rockchip SoC (RK3566/68/76/88) with NPU driver
+#### Intel CPU
+- CPU vendor must be reported in WSL as `GenuineIntel`
+- No Intel GPU acceleration path is configured by this installer
 
 ## 🔧 Installation
 
@@ -106,13 +98,13 @@ The script will guide you through:
    - Database password (auto-generated or custom)
 
 5. **Hardware Transcoding Setup**:
-   - Automatic API detection (NVENC, Quick Sync, VAAPI, RKMPP)
+   - Automatic API detection (`nvenc`)
    - Interactive selection from available options
    - Manual configuration option
    - Disable existing configurations
 
 6. **ML Hardware Acceleration**:
-   - Backend detection (CUDA, ROCm, OpenVINO, ARM NN, RKNN)
+   - Backend detection (`cuda`)
    - Performance optimization suggestions
    - Environment variable recommendations
 
@@ -132,8 +124,8 @@ The script will guide you through:
 
 #### Manual Configuration
 When auto-detection fails, you can manually specify:
-- **Transcoding**: `nvenc`, `quicksync`, `vaapi`, `vaapi-wsl`, `rkmpp`
-- **ML**: `cuda`, `rocm`, `openvino`, `openvino-wsl`, `armnn`, `rknn`
+- **Transcoding**: `nvenc`
+- **ML**: `cuda`
 
 ## 📁 Generated Files
 
@@ -156,20 +148,13 @@ your-installation-folder/
 
 | API | Detection Method | Requirements |
 |-----|------------------|--------------|
-| **NVENC** | `nvidia-smi` + Container Toolkit | NVIDIA GPU + drivers |
-| **Quick Sync** | Intel GPU + `/dev/dri` | Intel CPU with iGPU |
-| **VAAPI** | `/dev/dri` render nodes | AMD/Intel/NVIDIA GPU |
-| **RKMPP** | Rockchip SoC detection | RK35xx/RK33xx ARM SoC |
+| **NVENC** | `nvidia-smi` in WSL | NVIDIA GPU exposed to WSL2 |
 
 ### ML Acceleration Backends
 
 | Backend | Detection Method | Requirements |
 |---------|------------------|--------------|
-| **CUDA** | NVIDIA GPU + Compute 5.2+ | NVIDIA Container Toolkit |
-| **ROCm** | AMD GPU detection | 35GB+ disk space |
-| **OpenVINO** | Intel GPU detection | Iris Xe/Arc preferred |
-| **ARM NN** | Mali GPU + `/dev/mali0` | `libmali.so` library |
-| **RKNN** | Rockchip SoC + NPU driver | RK3566/68/76/88 |
+| **CUDA** | NVIDIA GPU + Compute 5.2+ | NVIDIA GPU exposed to WSL2 |
 
 ## ⚙️ Advanced Configuration
 
@@ -202,26 +187,16 @@ Add these to `.env` for optimal performance:
 # CUDA Multi-GPU
 MACHINE_LEARNING_DEVICE_IDS=0,1
 MACHINE_LEARNING_WORKERS=2
-
-# ARM NN Performance
-MACHINE_LEARNING_ANN_FP16_TURBO=true
-
-# RKNN Threading (RK3576/RK3588)
-MACHINE_LEARNING_RKNN_THREADS=3
-
-# ROCm Compatibility
-HSA_OVERRIDE_GFX_VERSION=10.3.0
 ```
 
 ### WSL-Specific Considerations
 
-For Windows WSL users:
+For WSL2 Ubuntu users:
 
 - **Database Volume**: Script automatically suggests Docker volumes over bind mounts
 - **Filesystem Compatibility**: Unsafe database bind mounts on `/mnt` and other Windows-backed filesystems are rejected
-- **NVIDIA Support**: Container Toolkit not required in WSL2
-- **VAAPI**: Uses `vaapi-wsl` variant instead of standard `vaapi`
-- **OpenVINO**: Uses `openvino-wsl` for Intel ML acceleration on WSL2
+- **Scope**: Non-WSL install paths and non-NVIDIA acceleration backends were removed
+- **CPU Target**: Installer exits on non-Intel CPU vendors
 
 ## 🐛 Troubleshooting
 
@@ -234,8 +209,7 @@ docker --version
 docker compose version
 docker info
 
-# Start Docker daemon (if needed)
-sudo systemctl start docker
+# If Docker is unavailable in WSL, start Docker Desktop on Windows first
 ```
 
 #### Hardware Not Detected
@@ -244,12 +218,8 @@ sudo systemctl start docker
 nvidia-smi
 docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi
 
-# Check Intel/AMD GPUs
-ls -la /dev/dri/
-lspci | grep -i "vga\|display"
-
-# Check Container Toolkit
-which nvidia-container-runtime
+# Confirm the CPU vendor reported inside WSL
+grep -m1 '^vendor_id' /proc/cpuinfo
 ```
 
 #### Permission Issues
@@ -264,17 +234,11 @@ sudo usermod -aG docker $USER
 #### NVIDIA CUDA
 - Verify driver version: `nvidia-smi`
 - Check compute capability: GPU must be 5.2+
-- Install Container Toolkit: [NVIDIA Docs](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+- Make sure GPU support is exposed into WSL2 by your Windows driver and Docker setup
 
-#### Intel Quick Sync
-- Verify `/dev/dri` devices exist
-- For older CPUs: May need low-power encoding mode
-- Kernel 5.15 issues: Upgrade kernel for 11th gen CPUs
-
-#### Rockchip RKNN
-- Check NPU driver: `cat /sys/kernel/debug/rknpu/version`
-- Verify SoC support: Only RK3566/68/76/88
-- Thread optimization: Set `MACHINE_LEARNING_RKNN_THREADS=2-3`
+#### Intel CPU Targeting
+- Confirm WSL reports `vendor_id : GenuineIntel`
+- If this check fails on your machine, this installer will now exit early
 
 ## 📖 References
 
@@ -282,7 +246,6 @@ sudo usermod -aG docker $USER
 - [Hardware Transcoding Guide](https://immich.app/docs/features/hardware-transcoding)
 - [ML Hardware Acceleration](https://immich.app/docs/features/ml-hardware-acceleration)
 - [Docker Compose Installation](https://docs.docker.com/compose/install/)
-- [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
 
 ## 📝 License
 

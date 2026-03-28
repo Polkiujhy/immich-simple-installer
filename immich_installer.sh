@@ -108,14 +108,6 @@ is_wsl_unsafe_database_path() {
     [[ "$resolved_path" == /mnt/* ]]
 }
 
-# Function to warn about optional GPU detection tooling
-warn_if_missing_gpu_detection_tools() {
-    if ! command_exists lspci; then
-        print_warning "pciutils is not installed; Intel/AMD GPU auto-detection may be incomplete."
-        print_info "Install it with: sudo apt install -y pciutils"
-    fi
-}
-
 # Function to download files with wget or curl
 download_file() {
     local output_file="$1"
@@ -132,28 +124,21 @@ download_file() {
     fi
 }
 
-# Function to normalize transcoding API names to current Immich service names
-normalize_transcoding_api() {
-    case "$1" in
-        qsv)
-            printf '%s\n' "quicksync"
-        ;;
-        *)
-            printf '%s\n' "$1"
-        ;;
-    esac
+# Function to require a WSL environment
+require_wsl_environment() {
+    if ! is_wsl; then
+        print_error "This installer is intended for WSL2 Ubuntu."
+        print_info "Use the official Immich Docker Compose guide for non-WSL Linux installs."
+        exit 1
+    fi
 }
 
-# Function to normalize ML backend names for WSL-specific services
-normalize_ml_backend() {
-    local backend="$1"
-
-    if is_wsl && [ "$backend" = "openvino" ]; then
-        printf '%s\n' "openvino-wsl"
-    elif ! is_wsl && [ "$backend" = "openvino-wsl" ]; then
-        printf '%s\n' "openvino"
-    else
-        printf '%s\n' "$backend"
+# Function to require an Intel CPU
+require_intel_cpu() {
+    if ! grep -qm1 '^vendor_id[[:space:]]*:[[:space:]]*GenuineIntel' /proc/cpuinfo 2>/dev/null; then
+        print_error "This installer is targeted at Intel CPU systems under WSL2."
+        print_info "Current CPU vendor is not reported as GenuineIntel."
+        exit 1
     fi
 }
 
@@ -180,58 +165,46 @@ configure_database_location() {
 
     echo
 
-    if is_wsl; then
-        print_warning "WSL detected!"
-        print_warning "The Postgres database must be on a filesystem that supports user/group ownership."
-        print_warning "Windows-backed filesystems such as NTFS/FAT32 under /mnt will NOT work."
-        echo
-        read -p "Do you want to use a Docker volume instead of a bind mount? (recommended for WSL) (Y/n): " use_volume
-        if [[ ! "$use_volume" =~ ^[Nn]$ ]]; then
-            configure_database_volume
-            return $?
+    print_warning "WSL detected!"
+    print_warning "The Postgres database must be on a filesystem that supports user/group ownership."
+    print_warning "Windows-backed filesystems such as NTFS/FAT32 under /mnt will NOT work."
+    echo
+    read -p "Do you want to use a Docker volume instead of a bind mount? (recommended for WSL) (Y/n): " use_volume
+    if [[ ! "$use_volume" =~ ^[Nn]$ ]]; then
+        configure_database_volume
+        return $?
+    fi
+
+    while true; do
+        echo "Current DB_DATA_LOCATION: $default_db_location"
+        read -p "Enter database data location (press Enter to keep default '$default_db_location'): " db_location
+        if [ -z "$db_location" ]; then
+            db_location="$default_db_location"
+        else
+            db_location=$(expand_user_path "$db_location")
         fi
 
-        while true; do
-            echo "Current DB_DATA_LOCATION: $default_db_location"
-            read -p "Enter database data location (press Enter to keep default '$default_db_location'): " db_location
-            if [ -z "$db_location" ]; then
-                db_location="$default_db_location"
-            else
-                db_location=$(expand_user_path "$db_location")
+        if is_wsl_unsafe_database_path "$db_location"; then
+            resolved_db_location=$(resolve_path "$db_location")
+            filesystem_type=$(get_filesystem_type "$resolved_db_location")
+            print_error "Database location '$resolved_db_location' is on '${filesystem_type:-unknown}', which is not supported for Postgres under WSL."
+            print_info "Use a Docker volume or a Linux filesystem path under your WSL home directory."
+            read -p "Switch to a Docker volume instead? (Y/n): " use_volume
+            if [[ ! "$use_volume" =~ ^[Nn]$ ]]; then
+                configure_database_volume
+                return $?
             fi
+            continue
+        fi
 
-            if is_wsl_unsafe_database_path "$db_location"; then
-                resolved_db_location=$(resolve_path "$db_location")
-                filesystem_type=$(get_filesystem_type "$resolved_db_location")
-                print_error "Database location '$resolved_db_location' is on '${filesystem_type:-unknown}', which is not supported for Postgres under WSL."
-                print_info "Use a Docker volume or a Linux filesystem path under your WSL home directory."
-                read -p "Switch to a Docker volume instead? (Y/n): " use_volume
-                if [[ ! "$use_volume" =~ ^[Nn]$ ]]; then
-                    configure_database_volume
-                    return $?
-                fi
-                continue
-            fi
-
-            if [ "$db_location" != "$default_db_location" ]; then
-                sed -i "s|DB_DATA_LOCATION=./postgres|DB_DATA_LOCATION=$db_location|" .env
-                print_info "Database location set to: $db_location"
-            else
-                print_info "Using default database location: ./postgres"
-            fi
-            return 0
-        done
-    fi
-
-    echo "Current DB_DATA_LOCATION: ./postgres"
-    read -p "Enter database data location (press Enter to keep default './postgres'): " db_location
-    if [ -n "$db_location" ]; then
-        db_location=$(expand_user_path "$db_location")
-        sed -i "s|DB_DATA_LOCATION=./postgres|DB_DATA_LOCATION=$db_location|" .env
-        print_info "Database location set to: $db_location"
-    else
-        print_info "Using default database location: ./postgres"
-    fi
+        if [ "$db_location" != "$default_db_location" ]; then
+            sed -i "s|DB_DATA_LOCATION=./postgres|DB_DATA_LOCATION=$db_location|" .env
+            print_info "Database location set to: $db_location"
+        else
+            print_info "Using default database location: ./postgres"
+        fi
+        return 0
+    done
 }
 
 # Function to generate a random password
@@ -291,7 +264,7 @@ add_docker_volume() {
     return 0
 }
 
-# Function to check for NVIDIA GPU and Container Toolkit
+# Function to check for NVIDIA GPU access in WSL
 check_nvidia() {
     local has_nvidia_gpu=false
     local has_nvidia_toolkit=false
@@ -299,54 +272,10 @@ check_nvidia() {
     # Check for NVIDIA GPU
     if command_exists nvidia-smi && nvidia-smi >/dev/null 2>&1; then
         has_nvidia_gpu=true
-    fi
-    
-    # Check for NVIDIA Container Toolkit (not needed in WSL2)
-    if ! is_wsl && [ "$has_nvidia_gpu" = true ]; then
-        # Check for nvidia-container-runtime or nvidia-docker2
-        if command -v nvidia-container-runtime >/dev/null 2>&1 || [ -f /usr/bin/nvidia-container-runtime ]; then
-            has_nvidia_toolkit=true
-            elif docker info 2>/dev/null | grep -q "nvidia"; then
-            has_nvidia_toolkit=true
-            elif [ -f /etc/docker/daemon.json ] && grep -q "nvidia" /etc/docker/daemon.json 2>/dev/null; then
-            has_nvidia_toolkit=true
-        fi
-        elif is_wsl && [ "$has_nvidia_gpu" = true ]; then
-        # In WSL2, we don't need Container Toolkit
         has_nvidia_toolkit=true
     fi
     
     echo "${has_nvidia_gpu}:${has_nvidia_toolkit}"
-}
-
-# Function to check for Intel Quick Sync support
-check_intel_qsv() {
-    if [ -d "/dev/dri" ] && ls /dev/dri/render* >/dev/null 2>&1; then
-        # Check if it's Intel GPU
-        if command_exists lspci && lspci | grep -i "vga.*intel" >/dev/null 2>&1; then
-            echo "true"
-            return
-        fi
-    fi
-    echo "false"
-}
-
-# Function to check for VAAPI support
-check_vaapi() {
-    if [ -d "/dev/dri" ] && ls /dev/dri/render* >/dev/null 2>&1; then
-        echo "true"
-    else
-        echo "false"
-    fi
-}
-
-# Function to check for Rockchip support
-check_rockchip() {
-    if lscpu | grep -i "rockchip\|rk35\|rk33" >/dev/null 2>&1; then
-        echo "true"
-    else
-        echo "false"
-    fi
 }
 
 # Function to detect available hardware transcoding APIs
@@ -361,27 +290,7 @@ detect_hardware_apis() {
     if [ "$has_nvidia_gpu" = "true" ] && [ "$has_nvidia_toolkit" = "true" ]; then
         apis+=("nvenc")
         elif [ "$has_nvidia_gpu" = "true" ] && [ "$has_nvidia_toolkit" = "false" ]; then
-        print_warning "NVIDIA GPU detected but Container Toolkit not installed."
-        print_info "Install NVIDIA Container Toolkit: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html"
-    fi
-    
-    # Check Intel QSV
-    if [ "$(check_intel_qsv)" = "true" ] && ! is_wsl; then
-        apis+=("quicksync")
-    fi
-    
-    # Check VAAPI
-    if [ "$(check_vaapi)" = "true" ]; then
-        if is_wsl; then
-            apis+=("vaapi-wsl")
-        else
-            apis+=("vaapi")
-        fi
-    fi
-    
-    # Check Rockchip
-    if [ "$(check_rockchip)" = "true" ]; then
-        apis+=("rkmpp")
+        print_warning "NVIDIA GPU detected but is not accessible from WSL."
     fi
     
     echo "${apis[@]}"
@@ -493,8 +402,6 @@ configure_hardware_transcoding() {
     fi
     
     print_info "Detecting available hardware acceleration APIs..."
-    warn_if_missing_gpu_detection_tools
-    
     local available_apis=($(detect_hardware_apis))
     
     if [ ${#available_apis[@]} -eq 0 ]; then
@@ -553,12 +460,12 @@ configure_hardware_transcoding() {
 configure_manual_hwaccel() {
     echo
     print_info "Manual hardware acceleration configuration:"
-    print_info "Available APIs: nvenc, quicksync, vaapi, vaapi-wsl, rkmpp"
+    print_info "Available APIs: nvenc"
     read -p "Enter the API you want to use (or 'disable' to remove, or press Enter to skip): " manual_api
     
     if [ -n "$manual_api" ]; then
         case "$manual_api" in
-            nvenc|qsv|quicksync|vaapi|vaapi-wsl|rkmpp)
+            nvenc)
                 setup_hardware_transcoding "$manual_api"
             ;;
             disable)
@@ -566,7 +473,7 @@ configure_manual_hwaccel() {
             ;;
             *)
                 print_error "Invalid API: $manual_api"
-                print_info "Valid options: nvenc, quicksync, vaapi, vaapi-wsl, rkmpp, disable"
+                print_info "Valid options: nvenc, disable"
             ;;
         esac
     else
@@ -576,8 +483,7 @@ configure_manual_hwaccel() {
 
 # Function to setup hardware transcoding
 setup_hardware_transcoding() {
-    local api
-    api=$(normalize_transcoding_api "$1")
+    local api="$1"
     
     print_info "Setting up hardware transcoding with $api..."
     
@@ -629,23 +535,6 @@ setup_hardware_transcoding() {
         print_success "Hardware acceleration configuration added to docker-compose.yml"
     fi
     
-    # Special handling for RKMPP with tonemapping
-    if [ "$api" = "rkmpp" ]; then
-        if [ -f "/usr/lib/aarch64-linux-gnu/libmali.so.1" ]; then
-            print_info "libmali detected. Enabling OpenCL tonemapping for RKMPP..."
-            # Uncomment the OpenCL lines in hwaccel.transcoding.yml
-            sed -i '/rkmpp:/,/^[[:space:]]*[^[:space:]]/ {
-                s/^[[:space:]]*#[[:space:]]*- \/dev\/mali0:\/dev\/mali0/      - \/dev\/mali0:\/dev\/mali0/
-                s/^[[:space:]]*#[[:space:]]*- \/etc\/OpenCL:\/etc\/OpenCL:ro/      - \/etc\/OpenCL:\/etc\/OpenCL:ro/
-                s/^[[:space:]]*#[[:space:]]*- \/usr\/lib\/aarch64-linux-gnu\/libmali\.so\.1:\/usr\/lib\/aarch64-linux-gnu\/libmali\.so\.1:ro/      - \/usr\/lib\/aarch64-linux-gnu\/libmali.so.1:\/usr\/lib\/aarch64-linux-gnu\/libmali.so.1:ro/
-            }' hwaccel.transcoding.yml
-            print_success "OpenCL tonemapping enabled for RKMPP."
-        else
-            print_warning "libmali.so.1 not found. Hardware tonemapping will not be available."
-            print_info "Install libmali from: https://github.com/tsukumijima/libmali-rockchip/releases"
-        fi
-    fi
-    
     print_success "Hardware transcoding configured with $api"
     print_info "Remember to:"
     print_info "1. Enable hardware acceleration in Admin > Video transcoding settings"
@@ -673,89 +562,11 @@ check_nvidia_cuda_ml() {
         fi
     fi
     
-    # Check for NVIDIA Container Toolkit (not needed in WSL2)
-    if ! is_wsl && [ "$has_nvidia_gpu" = true ]; then
-        if command -v nvidia-container-runtime >/dev/null 2>&1 || [ -f /usr/bin/nvidia-container-runtime ]; then
-            has_nvidia_toolkit=true
-            elif docker info 2>/dev/null | grep -q "nvidia"; then
-            has_nvidia_toolkit=true
-            elif [ -f /etc/docker/daemon.json ] && grep -q "nvidia" /etc/docker/daemon.json 2>/dev/null; then
-            has_nvidia_toolkit=true
-        fi
-        elif is_wsl && [ "$has_nvidia_gpu" = true ]; then
+    if [ "$has_nvidia_gpu" = true ]; then
         has_nvidia_toolkit=true
     fi
     
     echo "${has_nvidia_gpu}:${has_nvidia_toolkit}:${cuda_compute_capability}"
-}
-
-# Function to check for AMD ROCm support
-check_amd_rocm() {
-    if command_exists lspci && lspci | grep -i "amd.*radeon\|amd.*rx\|amd.*vega" >/dev/null 2>&1; then
-        echo "true"
-    else
-        echo "false"
-    fi
-}
-
-# Function to check for Intel OpenVINO support
-check_intel_openvino() {
-    if command_exists lspci && lspci | grep -i "vga.*intel\|display.*intel" >/dev/null 2>&1; then
-        # Check for Iris Xe or Arc GPUs specifically
-        if lspci | grep -i "intel.*iris\|intel.*arc\|intel.*xe" >/dev/null 2>&1; then
-            echo "discrete"
-            elif lspci | grep -i "vga.*intel" >/dev/null 2>&1; then
-            echo "integrated"
-        fi
-    else
-        echo "false"
-    fi
-}
-
-# Function to check for ARM NN (Mali GPU) support
-check_arm_nn() {
-    local has_mali=false
-    local has_mali_dev=false
-    local has_libmali=false
-    
-    # Check for Mali GPU
-    if lscpu | grep -i "arm\|aarch64" >/dev/null 2>&1 && command_exists lspci && lspci | grep -i "mali" >/dev/null 2>&1; then
-        has_mali=true
-    fi
-    
-    # Check for /dev/mali0
-    if [ -c "/dev/mali0" ]; then
-        has_mali_dev=true
-        has_mali=true  # If we have the device, we likely have Mali
-    fi
-    
-    # Check for libmali.so
-    if [ -f "/usr/lib/libmali.so" ] || [ -f "/usr/lib/aarch64-linux-gnu/libmali.so" ]; then
-        has_libmali=true
-    fi
-    
-    echo "${has_mali}:${has_mali_dev}:${has_libmali}"
-}
-
-# Function to check for RKNN support
-check_rknn() {
-    local has_rockchip=false
-    local rknn_version=""
-    
-    # Check for supported Rockchip SoCs
-    if lscpu | grep -i "rk35\|rk36" >/dev/null 2>&1; then
-        local soc_info=$(lscpu | grep -i "rk35\|rk36" | head -1)
-        if [[ "$soc_info" =~ RK3566|RK3568|RK3576|RK3588 ]]; then
-            has_rockchip=true
-        fi
-    fi
-    
-    # Check RKNPU driver version
-    if [ -f "/sys/kernel/debug/rknpu/version" ]; then
-        rknn_version=$(cat /sys/kernel/debug/rknpu/version 2>/dev/null || echo "unknown")
-    fi
-    
-    echo "${has_rockchip}:${rknn_version}"
 }
 
 # Function to detect available ML hardware acceleration backends
@@ -771,54 +582,7 @@ detect_ml_backends() {
     if [ "$has_nvidia_gpu" = "true" ] && [ "$has_nvidia_toolkit" = "true" ] && [ -n "$cuda_capability" ]; then
         backends+=("cuda")
         elif [ "$has_nvidia_gpu" = "true" ] && [ -n "$cuda_capability" ]; then
-        if [ "$has_nvidia_toolkit" = "false" ] && ! is_wsl; then
-            print_warning "NVIDIA GPU detected but Container Toolkit not installed (required for ML)."
-        fi
-    fi
-    
-    # Check AMD ROCm
-    if [ "$(check_amd_rocm)" = "true" ]; then
-        backends+=("rocm")
-    fi
-    
-    # Check Intel OpenVINO
-    local intel_result=$(check_intel_openvino)
-    if [ "$intel_result" != "false" ]; then
-        if is_wsl; then
-            backends+=("openvino-wsl")
-        else
-            backends+=("openvino")
-        fi
-    fi
-    
-    # Check ARM NN
-    local armnn_result=$(check_arm_nn)
-    local has_mali=$(echo "$armnn_result" | cut -d: -f1)
-    local has_mali_dev=$(echo "$armnn_result" | cut -d: -f2)
-    local has_libmali=$(echo "$armnn_result" | cut -d: -f3)
-    
-    if [ "$has_mali" = "true" ] && [ "$has_mali_dev" = "true" ] && [ "$has_libmali" = "true" ]; then
-        backends+=("armnn")
-        elif [ "$has_mali" = "true" ]; then
-        print_warning "Mali GPU detected but missing requirements for ARM NN."
-        if [ "$has_mali_dev" = "false" ]; then
-            print_info "Missing: /dev/mali0 device"
-        fi
-        if [ "$has_libmali" = "false" ]; then
-            print_info "Missing: libmali.so library"
-        fi
-    fi
-    
-    # Check RKNN
-    local rknn_result=$(check_rknn)
-    local has_rockchip=$(echo "$rknn_result" | cut -d: -f1)
-    local rknn_version=$(echo "$rknn_result" | cut -d: -f2)
-    
-    if [ "$has_rockchip" = "true" ] && [ "$rknn_version" != "" ]; then
-        backends+=("rknn")
-        elif [ "$has_rockchip" = "true" ]; then
-        print_warning "Supported Rockchip SoC detected but RKNPU driver not found."
-        print_info "Check: cat /sys/kernel/debug/rknpu/version"
+        print_warning "NVIDIA GPU detected but CUDA is not accessible from WSL."
     fi
     
     echo "${backends[@]}"
@@ -841,8 +605,6 @@ configure_ml_hardware_acceleration() {
     fi
     
     print_info "Detecting available ML acceleration backends..."
-    warn_if_missing_gpu_detection_tools
-    
     local available_backends=($(detect_ml_backends))
     
     if [ ${#available_backends[@]} -eq 0 ]; then
@@ -901,12 +663,12 @@ configure_ml_hardware_acceleration() {
 configure_manual_ml_hwaccel() {
     echo
     print_info "Manual ML hardware acceleration configuration:"
-    print_info "Available backends: cuda, rocm, openvino, openvino-wsl, armnn, rknn"
+    print_info "Available backends: cuda"
     read -p "Enter the backend you want to use (or 'disable' to remove, or press Enter to skip): " manual_backend
     
     if [ -n "$manual_backend" ]; then
         case "$manual_backend" in
-            cuda|rocm|openvino|openvino-wsl|armnn|rknn)
+            cuda)
                 setup_ml_hardware_acceleration "$manual_backend"
             ;;
             disable)
@@ -914,7 +676,7 @@ configure_manual_ml_hwaccel() {
             ;;
             *)
                 print_error "Invalid backend: $manual_backend"
-                print_info "Valid options: cuda, rocm, openvino, openvino-wsl, armnn, rknn, disable"
+                print_info "Valid options: cuda, disable"
             ;;
         esac
     else
@@ -924,14 +686,7 @@ configure_manual_ml_hwaccel() {
 
 # Function to setup ML hardware acceleration
 setup_ml_hardware_acceleration() {
-    local backend
-    local image_backend
-
-    backend=$(normalize_ml_backend "$1")
-    image_backend="$backend"
-    if [ "$backend" = "openvino-wsl" ]; then
-        image_backend="openvino"
-    fi
+    local backend="$1"
     
     print_info "Setting up ML hardware acceleration with $backend..."
     
@@ -984,13 +739,13 @@ setup_ml_hardware_acceleration() {
     fi
     
     # Modify the image tag to include the backend
-    print_info "Updating ML service image tag for $image_backend backend..."
-    if grep -q "immich-machine-learning.*release.*-$image_backend" docker-compose.yml; then
-        print_info "Image tag already includes $image_backend backend."
+    print_info "Updating ML service image tag for $backend backend..."
+    if grep -q "immich-machine-learning.*release.*-$backend" docker-compose.yml; then
+        print_info "Image tag already includes $backend backend."
     else
         # Update the image tag
-        sed -i "s|immich-machine-learning:\${IMMICH_VERSION:-release}|immich-machine-learning:\${IMMICH_VERSION:-release}-$image_backend|" docker-compose.yml
-        print_success "Updated ML service image to include $image_backend backend."
+        sed -i "s|immich-machine-learning:\${IMMICH_VERSION:-release}|immich-machine-learning:\${IMMICH_VERSION:-release}-$backend|" docker-compose.yml
+        print_success "Updated ML service image to include $backend backend."
     fi
     
     # Backend-specific configuration and advice
@@ -1000,40 +755,6 @@ setup_ml_hardware_acceleration() {
             print_info "Driver version must be >= 545 (CUDA 12.3 support)."
             print_info "Optional: Set MACHINE_LEARNING_DEVICE_IDS=0,1 for multi-GPU setups."
             print_info "Optional: Increase MACHINE_LEARNING_WORKERS for better utilization."
-        ;;
-        "rocm")
-            print_warning "ROCm image is quite large (35GB+ disk space required)."
-            print_info "If your GPU isn't officially supported, you may need to set:"
-            print_info "HSA_OVERRIDE_GFX_VERSION=<supported_version> (e.g., 10.3.0)"
-            print_info "If that doesn't work, also try: HSA_USE_SVM=0"
-        ;;
-        "openvino"|"openvino-wsl")
-            print_info "OpenVINO backend selected for Intel GPUs."
-            if [ "$backend" = "openvino-wsl" ]; then
-                print_info "Using the WSL-specific OpenVINO service definition."
-            fi
-            print_warning "Expect higher RAM usage compared to CPU processing."
-            print_info "Discrete GPUs generally work better than integrated ones."
-            print_info "For multi-GPU: Set MACHINE_LEARNING_DEVICE_IDS=0,1"
-        ;;
-        "armnn")
-            print_info "ARM NN backend selected for Mali GPUs."
-            if [ ! -f "/lib/firmware/mali_csffw.bin" ]; then
-                print_warning "Optional firmware file /lib/firmware/mali_csffw.bin not found."
-                print_info "Update hwaccel.ml.yml if your device doesn't require this file."
-            fi
-            print_info "Recommended: Add MACHINE_LEARNING_ANN_FP16_TURBO=true to .env for better performance."
-        ;;
-        "rknn")
-            print_info "RKNN backend selected for Rockchip NPU."
-            local rknn_info=$(check_rknn)
-            local rknn_version=$(echo "$rknn_info" | cut -d: -f2)
-            if [ "$rknn_version" != "unknown" ] && [ -n "$rknn_version" ]; then
-                print_success "RKNPU driver version: $rknn_version"
-            fi
-            print_info "Recommended for RK3576/RK3588: Add MACHINE_LEARNING_RKNN_THREADS=2 to .env"
-            print_info "For RK3588: MACHINE_LEARNING_RKNN_THREADS=3 for maximum performance"
-            print_warning "Higher thread count increases RAM usage proportionally."
         ;;
     esac
     
@@ -1072,12 +793,11 @@ show_usage() {
     echo "  -h              : Show this help message"
     echo ""
     echo "This script will:"
-    echo "  - Download and configure Immich with Docker Compose"
+    echo "  - Download and configure Immich for WSL2 Ubuntu on Intel CPU systems"
     echo "  - Set up environment variables interactively"
-    echo "  - Detect and configure hardware transcoding (NVENC, QSV, VAAPI, RKMPP)"
-    echo "  - Detect and configure ML hardware acceleration (CUDA, ROCm, OpenVINO, ARM NN, RKNN)"
+    echo "  - Detect and configure NVIDIA transcoding (NVENC)"
+    echo "  - Detect and configure NVIDIA ML acceleration (CUDA)"
     echo "  - Option to disable hardware acceleration if already configured"
-    echo "  - Handle WSL-specific requirements"
 }
 
 # Parse command line arguments
@@ -1102,6 +822,8 @@ done
 # Main installation function
 main() {
     print_info "Starting Immich installation..."
+    require_wsl_environment
+    require_intel_cpu
     
     # Check Docker installation
     check_docker
