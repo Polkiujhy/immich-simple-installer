@@ -52,6 +52,29 @@ Non-WSL Linux paths and non-NVIDIA acceleration routes were intentionally remove
 
 ## 🔧 Installation
 
+### Install WSL2 Ubuntu
+
+If WSL2 Ubuntu is not installed yet, open **PowerShell as Administrator** in Windows and run:
+
+```powershell
+wsl --install -d Ubuntu
+```
+
+Then:
+
+1. Restart Windows if prompted.
+2. Launch `Ubuntu` from the Start menu.
+3. Create your Linux username and password when Ubuntu starts the first time.
+4. Confirm WSL2 is active:
+
+```powershell
+wsl --list --verbose
+```
+
+`Ubuntu` should show version `2`. If WSL is already installed but Ubuntu is missing, you can still use `wsl --install -d Ubuntu`.
+
+Reference: [Install WSL | Microsoft Learn](https://learn.microsoft.com/en-us/windows/wsl/install)
+
 ### Quick Start
 
 ```bash
